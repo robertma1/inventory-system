@@ -3,7 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>飛機模型庫存管理（手機可掃條碼）</title>
+  <title>飛機模型庫存管理（線上查詢 + 相機掃條碼）</title>
+
+  <!-- ZXing：條碼掃描備援（BarcodeDetector 不支援時使用） -->
+  <script src="https://unpkg.com/@zxing/browser@0.1.4/umd/index.min.js"></script>
+
   <style>
     :root{
       --bg:#0b1220;
@@ -134,7 +138,7 @@
       position: fixed;
       right: 14px;
       bottom: 14px;
-      max-width: 520px;
+      max-width: 560px;
       padding: 12px 14px;
       border-radius: 12px;
       border: 1px solid var(--line);
@@ -149,6 +153,14 @@
     .toast.good{border-color:#10b98177}
     .toast.warn{border-color:#f59e0b77}
     .toast.bad{border-color:#fb718577}
+    .help{
+      margin-top:8px;
+      color:var(--muted);
+      font-size:12px;
+      line-height:1.55;
+    }
+    .split{display:grid; grid-template-columns: 1fr 1fr; gap:12px;}
+    @media (max-width: 740px){ .split{grid-template-columns:1fr} }
     .pre{
       white-space:pre-wrap;
       word-break:break-word;
@@ -162,21 +174,73 @@
       max-height: 240px;
       overflow:auto;
     }
+
+    /* Scanner modal */
+    .modal{
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 9998;
+    }
+    .modal.show{ display:flex; }
+    .modal .panel{
+      width: min(880px, 100%);
+      background: linear-gradient(180deg, #0f172a, #0b1220);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 18px 50px rgba(0,0,0,.5);
+    }
+    .modal .panel .hd{
+      padding: 12px 14px;
+      display:flex;
+      gap: 10px;
+      align-items:center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      flex-wrap:wrap;
+    }
+    .modal .panel .bd{ padding: 12px 14px; }
+    .videoWrap{
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow:hidden;
+    }
+    video{ width:100%; height:100%; object-fit: cover; }
+    .scanHint{
+      position:absolute; inset:auto 10px 10px 10px;
+      background: rgba(0,0,0,.45);
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 10px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: #e5e7eb;
+    }
   </style>
 </head>
 
 <body>
 <header>
   <div>
-    <h1>飛機模型庫存管理（手機可掃條碼）</h1>
+    <h1>飛機模型庫存管理</h1>
     <div class="sub">
-      介面有出來但按鈕沒反應，通常是 JS 綁定失敗。本版已改為 DOMContentLoaded + 安全綁定。
+      ✅ Catalog/Inventory 本機保存｜✅ 線上查詢 SKU 自動補資料｜✅ 手機相機掃條碼自動輸入 SKU
     </div>
   </div>
-  <div class="pill">✅ localStorage 自動保存</div>
+  <div class="pill">✅ GitHub Pages / localStorage</div>
 </header>
 
 <main>
+
   <div class="card">
     <div class="hd">
       <b>總覽</b>
@@ -201,58 +265,111 @@
   </div>
 
   <div class="grid">
+
+    <!-- Left: Input -->
     <section class="card">
       <div class="hd">
-        <b>新增 / 更新庫存</b>
-        <span class="pill">輸入 SKU → 自動帶出</span>
+        <b>新增 / 更新 / 售出</b>
+        <span class="pill">SKU → 自動辨識</span>
       </div>
       <div class="bd">
         <div class="row">
           <div class="field sm">
-            <label>SKU</label>
-            <input id="skuInput" class="mono" placeholder="例如：SA2043" />
+            <label>SKU（可掃條碼）</label>
+            <input id="skuInput" class="mono" placeholder="例如：SA2043" autocomplete="off" />
           </div>
           <div class="field sm">
-            <label>Qty</label>
+            <label>數量（Qty）</label>
             <input id="qtyInput" type="number" min="0" step="1" placeholder="例如：3" />
           </div>
           <div class="field lg">
-            <label>辨識結果</label>
-            <input id="autoInfo" placeholder="輸入 SKU 後顯示…" readonly />
+            <label>辨識結果（Catalog / 線上）</label>
+            <input id="autoInfo" placeholder="輸入 SKU 或掃描後顯示…" readonly />
           </div>
         </div>
 
         <div class="btns">
           <button class="primary" id="addBtn">加入 / 更新庫存</button>
+          <button class="warn" id="sellBtn">售出（扣庫存）</button>
+          <button id="lookupBtn">線上查詢 SKU</button>
+          <button class="good" id="scanBtn">📷 掃描條碼輸入 SKU</button>
           <button class="ghost" id="clearFormBtn">清空輸入</button>
+        </div>
+
+        <div class="help">
+          - 若 Catalog 有此 SKU：可直接加入/更新庫存、或售出扣庫存。<br/>
+          - 若 Catalog 沒有：按「線上查詢 SKU」自動抓品牌/航空公司/機型/Reg/比例 → 再按「存入 Catalog」。<br/>
+          - 手機掃碼：請用 <b>Safari/Chrome 正常瀏覽器</b> 開啟（避免 LINE/FB 內建瀏覽器），並允許相機權限。
         </div>
 
         <hr style="border:none;border-top:1px solid var(--line);margin:14px 0"/>
 
-        <b class="small">手動補齊並存入 Catalog（測試用）</b>
-        <div class="row" style="margin-top:10px">
-          <div class="field"><label>品牌</label><input id="brandInput" placeholder="JC Wings" /></div>
-          <div class="field"><label>航空公司</label><input id="airlineInput" placeholder="Japan Airlines" /></div>
+        <div class="split">
+          <div>
+            <b class="small">Catalog（SKU → 商品資訊）</b>
+            <div class="row" style="margin-top:10px">
+              <div class="field">
+                <label>品牌</label>
+                <input id="brandInput" placeholder="JC Wings" />
+              </div>
+              <div class="field">
+                <label>航空公司</label>
+                <input id="airlineInput" placeholder="Japan Airlines" />
+              </div>
+            </div>
+            <div class="row">
+              <div class="field">
+                <label>機型</label>
+                <input id="typeInput" placeholder="Boeing 777-200ER" />
+              </div>
+              <div class="field">
+                <label>機身編號（Reg）</label>
+                <input id="regInput" class="mono" placeholder="JA702J" />
+              </div>
+              <div class="field sm">
+                <label>比例</label>
+                <input id="scaleInput" class="mono" placeholder="1:200" />
+              </div>
+            </div>
+
+            <div class="btns">
+              <button class="good" id="saveCatalogBtn">存入 Catalog</button>
+              <button class="warn" id="deleteCatalogBtn">從 Catalog 刪除此 SKU</button>
+            </div>
+
+            <div class="help">
+              提示：線上查詢成功後，這些欄位會自動填好；你只要按「存入 Catalog」就完成建檔。
+            </div>
+          </div>
+
+          <div>
+            <b class="small">工具</b>
+            <div class="btns" style="margin-top:10px">
+              <button id="resetDemoBtn">重置為範例資料</button>
+              <button class="bad" id="wipeAllBtn">清除全部資料（Catalog+Inventory）</button>
+            </div>
+            <div class="help">⚠️ 清除全部會刪除瀏覽器保存資料（無法復原）。</div>
+
+            <hr style="border:none;border-top:1px solid var(--line);margin:14px 0"/>
+
+            <b class="small">線上資料來源（可自行調整）</b>
+            <div class="help">
+              目前會嘗試：Scalemodelstore / WingsWorld / AviationMegastore。<br/>
+              純前端抓取用 jina.ai 轉讀（避免 CORS）。如網站版型改了可能要微調解析規則。
+            </div>
+          </div>
         </div>
-        <div class="row">
-          <div class="field"><label>機型</label><input id="typeInput" placeholder="Boeing 777-200ER" /></div>
-          <div class="field"><label>Reg</label><input id="regInput" class="mono" placeholder="JA702J" /></div>
-          <div class="field sm"><label>比例</label><input id="scaleInput" class="mono" placeholder="1:200" /></div>
-        </div>
-        <div class="btns">
-          <button class="good" id="saveCatalogBtn">存入 Catalog</button>
-          <button class="warn" id="deleteCatalogBtn">從 Catalog 刪除此 SKU</button>
-          <button id="resetDemoBtn">重置為範例資料</button>
-          <button class="bad" id="wipeAllBtn">清除全部資料</button>
-        </div>
+
       </div>
     </section>
 
+    <!-- Right: Inventory list -->
     <section class="card">
       <div class="hd">
         <b>庫存清單</b>
         <div class="row" style="gap:8px; align-items:center">
           <input id="searchInput" placeholder="搜尋：SKU / 航空公司 / 機型 / Reg…" style="width:280px; max-width:52vw;" />
+          <button id="exportInventoryBtn">匯出 Inventory JSON</button>
         </div>
       </div>
       <div class="bd">
@@ -260,52 +377,163 @@
           <table>
             <thead>
               <tr>
-                <th>SKU</th><th>品牌</th><th>航空公司</th><th>機型</th><th>Reg</th><th>比例</th>
-                <th class="right">Qty</th><th class="right">操作</th>
+                <th style="min-width:90px">SKU</th>
+                <th style="min-width:100px">品牌</th>
+                <th style="min-width:140px">航空公司</th>
+                <th style="min-width:160px">機型</th>
+                <th style="min-width:100px">Reg</th>
+                <th style="min-width:80px">比例</th>
+                <th class="right" style="min-width:120px">數量</th>
+                <th class="right" style="min-width:180px">操作</th>
               </tr>
             </thead>
             <tbody id="invBody">
-              <tr><td colspan="8" class="muted">尚無庫存。</td></tr>
+              <tr><td colspan="8" class="muted">尚無庫存。請在左側新增。</td></tr>
             </tbody>
           </table>
         </div>
+
+        <div class="btns" style="margin-top:12px">
+          <button class="warn" id="importInventoryBtn">匯入 Inventory JSON</button>
+          <button id="exportCatalogBtn">匯出 Catalog JSON</button>
+          <button class="warn" id="importCatalogBtn">匯入 Catalog JSON</button>
+        </div>
+
+        <div class="help">
+          快速操作：<br/>
+          - 「-1」「+1」快速調整庫存<br/>
+          - 「售出」用左邊輸入 SKU + Qty 直接扣庫存
+        </div>
       </div>
     </section>
+
   </div>
+
+  <!-- Raw JSON preview / export -->
+  <section class="card">
+    <div class="hd">
+      <b>匯入 / 匯出內容</b>
+      <span class="pill">JSON（可備份/搬家）</span>
+    </div>
+    <div class="bd">
+      <div class="split">
+        <div>
+          <label>貼上要匯入的 JSON（Catalog 或 Inventory）</label>
+          <textarea id="jsonArea" rows="8" placeholder='貼上 JSON 後再按「匯入」'></textarea>
+          <div class="btns">
+            <button class="warn" id="doImportCatalogBtn">把這份 JSON 當 Catalog 匯入（覆蓋）</button>
+            <button class="warn" id="doImportInventoryBtn">把這份 JSON 當 Inventory 匯入（覆蓋）</button>
+          </div>
+          <div class="help">注意：匯入會覆蓋目前資料，建議先匯出備份。</div>
+        </div>
+        <div>
+          <label>匯出結果（可複製保存）</label>
+          <div class="pre" id="exportBox">{}</div>
+          <div class="btns">
+            <button id="copyExportBtn">複製匯出內容</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="hd"><b>GitHub Pages 使用提醒</b></div>
+    <div class="bd help">
+      1) 相機掃碼需要 HTTPS（GitHub Pages ✅）<br/>
+      2) iPhone 建議用 Safari/Chrome 正常瀏覽器開啟，不要用 LINE/FB 內建瀏覽器（常會擋相機權限）<br/>
+      3) 若按鈕無反應：通常是 JS 報錯，請用電腦 Chrome → 右鍵「檢查」→ Console 看紅字（貼給我我能立即定位）
+    </div>
+  </section>
+
 </main>
+
+<!-- Scanner Modal -->
+<div id="scanModal" class="modal" aria-hidden="true">
+  <div class="panel">
+    <div class="hd">
+      <b>掃描條碼（自動輸入 SKU）</b>
+      <div class="row" style="gap:8px; align-items:center">
+        <select id="cameraSelect" style="min-width: 220px;"></select>
+        <button id="closeScanBtn" class="bad">關閉</button>
+      </div>
+    </div>
+    <div class="bd">
+      <div class="videoWrap">
+        <video id="scanVideo" playsinline></video>
+        <div class="scanHint">把條碼放在畫面中間，讀到後會自動填入 SKU 並關閉視窗。</div>
+      </div>
+      <div class="help" id="scanStatus">尚未開始…</div>
+    </div>
+  </div>
+</div>
 
 <div id="toast" class="toast"></div>
 
 <script>
-/** ======= 這版的關鍵：等 DOM ready 才開始抓元素與綁事件 ======= */
-
 document.addEventListener("DOMContentLoaded", () => {
 
+  /** ==========================
+   *  localStorage keys & demo
+   *  ========================== */
   const LS_KEYS = {
-    catalog: "rf_catalog_fix_v1",
-    inventory: "rf_inventory_fix_v1",
-    lastSave: "rf_last_save_fix_v1"
+    catalog: "rf_catalog_v2",
+    inventory: "rf_inventory_v2",
+    lastSave: "rf_last_save_v2"
   };
 
+  // 內建一筆範例（你提過的）
   const DEMO_CATALOG = {
     "SA2043": { brand:"JC Wings", airline:"Japan Airlines", aircraft:"Boeing 777-200ER", reg:"JA702J", scale:"1:200" }
   };
 
-  const el = (id) => document.getElementById(id);
+  /** ==========================
+   *  Online lookup settings
+   *  ========================== */
+  // 用 jina.ai 轉讀：避免 GitHub Pages 的 CORS 限制
+  // 會抓到目標頁的 HTML 文字（不同網站可能格式不同，解析走 heuristic）
+  const JINA_PREFIX = "https://r.jina.ai/http://";
+  const JINA_PREFIX_S = "https://r.jina.ai/https://";
 
+  // 嘗試的「搜尋 URL」模板（若網站改版可在這裡調整）
+  // 注意：不同網站可能需要不同 query param；以下是常見猜法。
+  const LOOKUP_SOURCES = [
+    {
+      name: "ScaleModelStore",
+      homepage: "https://www.scalemodelstore.com/",
+      searchUrls: (sku) => [
+        `https://www.scalemodelstore.com/search?q=${encodeURIComponent(sku)}`,
+        `https://www.scalemodelstore.com/search?query=${encodeURIComponent(sku)}`,
+        `https://www.scalemodelstore.com/?s=${encodeURIComponent(sku)}`
+      ]
+    },
+    {
+      name: "WingsWorld",
+      homepage: "https://www.wingsworld.cn/",
+      searchUrls: (sku) => [
+        `https://www.wingsworld.cn/search?keyword=${encodeURIComponent(sku)}`,
+        `https://www.wingsworld.cn/search?search=${encodeURIComponent(sku)}`,
+        `https://www.wingsworld.cn/?s=${encodeURIComponent(sku)}`
+      ]
+    },
+    {
+      name: "AviationMegastore",
+      homepage: "https://www.aviationmegastore.com/en/",
+      searchUrls: (sku) => [
+        `https://www.aviationmegastore.com/en/search/?q=${encodeURIComponent(sku)}`,
+        `https://www.aviationmegastore.com/en/search/?query=${encodeURIComponent(sku)}`
+      ]
+    }
+  ];
+
+  /** ==========================
+   *  DOM helpers
+   *  ========================== */
+  const el = (id) => document.getElementById(id);
   function safeBind(id, evt, fn){
     const node = el(id);
-    if(!node){
-      console.warn("Missing element id:", id);
-      return;
-    }
+    if(!node){ console.warn("Missing element:", id); return; }
     node.addEventListener(evt, fn);
-  }
-
-  function nowStamp(){
-    const d = new Date();
-    const pad = n => String(n).padStart(2,"0");
-    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
   function toast(msg, type="good"){
@@ -316,15 +544,22 @@ document.addEventListener("DOMContentLoaded", () => {
     setTimeout(()=>{ t.className = "toast"; }, 2600);
   }
 
-  function normalizeSKU(s){ return (s||"").trim().toUpperCase(); }
-  function formatInfo(p){ return `${p.brand}｜${p.airline}｜${p.aircraft}｜${p.reg}｜${p.scale}`; }
+  function nowStamp(){
+    const d = new Date();
+    const pad = n => String(n).padStart(2,"0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function normalizeSKU(s){ return (s || "").trim().toUpperCase(); }
 
   function loadJSON(key, fallback){
     try{
       const raw = localStorage.getItem(key);
       if(!raw) return fallback;
       return JSON.parse(raw);
-    }catch(e){ return fallback; }
+    }catch(e){
+      return fallback;
+    }
   }
 
   function saveJSON(key, obj){
@@ -333,6 +568,29 @@ document.addEventListener("DOMContentLoaded", () => {
     updateSavePill();
   }
 
+  function updateSavePill(){
+    const stamp = localStorage.getItem(LS_KEYS.lastSave) || "—";
+    const p = el("savePill");
+    if(p) p.textContent = `最近保存：${stamp}`;
+  }
+
+  function formatInfo(p){
+    if(!p) return "";
+    return `${p.brand || "—"}｜${p.airline || "—"}｜${p.aircraft || "—"}｜${p.reg || "—"}｜${p.scale || "—"}`;
+  }
+
+  function escapeHtml(s){
+    return String(s ?? "")
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#039;");
+  }
+
+  /** ==========================
+   *  State
+   *  ========================== */
   let catalog = loadJSON(LS_KEYS.catalog, null);
   let inventory = loadJSON(LS_KEYS.inventory, null);
 
@@ -348,12 +606,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   ensureInit();
 
-  function updateSavePill(){
-    const stamp = localStorage.getItem(LS_KEYS.lastSave) || "—";
-    const p = el("savePill");
-    if(p) p.textContent = `最近保存：${stamp}`;
-  }
-
+  /** ==========================
+   *  UI update
+   *  ========================== */
   function updateKPIs(){
     const invKeys = Object.keys(inventory || {});
     el("kpiInventoryItems").textContent = invKeys.length;
@@ -365,40 +620,89 @@ document.addEventListener("DOMContentLoaded", () => {
     el("kpiCatalogCount").textContent = Object.keys(catalog || {}).length;
   }
 
+  function fillManualFields(p){
+    el("brandInput").value = p?.brand || "";
+    el("airlineInput").value = p?.airline || "";
+    el("typeInput").value = p?.aircraft || "";
+    el("regInput").value = p?.reg || "";
+    el("scaleInput").value = p?.scale || "";
+  }
+
   function setAutoInfoFromSKU(){
     const sku = normalizeSKU(el("skuInput").value);
-    if(!sku){ el("autoInfo").value = ""; return; }
+    if(!sku){
+      el("autoInfo").value = "";
+      return;
+    }
     const p = catalog[sku];
     if(p){
-      el("autoInfo").value = "✅ " + formatInfo(p);
-      el("brandInput").value = p.brand || "";
-      el("airlineInput").value = p.airline || "";
-      el("typeInput").value = p.aircraft || "";
-      el("regInput").value = p.reg || "";
-      el("scaleInput").value = p.scale || "";
+      el("autoInfo").value = "✅ Catalog： " + formatInfo(p);
+      fillManualFields(p);
     }else{
-      el("autoInfo").value = "⚠️ Catalog 找不到此 SKU（可手動補齊後存入）";
+      el("autoInfo").value = "⚠️ Catalog 找不到。可按「線上查詢 SKU」自動抓資料。";
     }
   }
 
   function clearForm(){
-    ["skuInput","qtyInput","autoInfo","brandInput","airlineInput","typeInput","regInput","scaleInput"]
-      .forEach(id => { const n = el(id); if(n) n.value = ""; });
+    el("skuInput").value = "";
+    el("qtyInput").value = "";
+    el("autoInfo").value = "";
+    fillManualFields(null);
   }
 
+  /** ==========================
+   *  Inventory ops
+   *  ========================== */
   function addOrUpdateInventory(){
     const sku = normalizeSKU(el("skuInput").value);
     const qty = Math.floor(Number(el("qtyInput").value));
     if(!sku){ toast("請先輸入 SKU。","warn"); return; }
     if(!Number.isFinite(qty) || qty < 0){ toast("Qty 請輸入 0 以上整數。","warn"); return; }
-    const p = catalog[sku];
-    if(!p){ toast("此 SKU 尚未建立 Catalog。","warn"); return; }
 
-    inventory[sku] = { sku, qty, ...p, updatedAt: nowStamp() };
+    const p = catalog[sku];
+    if(!p){
+      toast("此 SKU 尚未建立 Catalog，請先線上查詢或手動補齊並存入 Catalog。","warn");
+      return;
+    }
+
+    inventory[sku] = {
+      sku,
+      qty,
+      brand: p.brand || "",
+      airline: p.airline || "",
+      aircraft: p.aircraft || "",
+      reg: p.reg || "",
+      scale: p.scale || "",
+      updatedAt: nowStamp()
+    };
+
     saveJSON(LS_KEYS.inventory, inventory);
     renderInventory();
     updateKPIs();
     toast(`已更新庫存：${sku}（Qty=${qty}）`);
+  }
+
+  function sellInventory(){
+    const sku = normalizeSKU(el("skuInput").value);
+    const sold = Math.floor(Number(el("qtyInput").value));
+    if(!sku){ toast("請先輸入 SKU。","warn"); return; }
+    if(!Number.isFinite(sold) || sold <= 0){ toast("售出數量請輸入 1 以上整數。","warn"); return; }
+
+    const it = inventory[sku];
+    if(!it){
+      toast("Inventory 找不到此 SKU（請先加入庫存）。","warn");
+      return;
+    }
+
+    const before = Number(it.qty || 0);
+    const after = Math.max(0, before - sold);
+    it.qty = after;
+    it.updatedAt = nowStamp();
+    saveJSON(LS_KEYS.inventory, inventory);
+    renderInventory();
+    updateKPIs();
+
+    toast(`已售出：${sku}（-${sold}，剩餘 ${after}）`, after === 0 ? "warn" : "good");
   }
 
   function deleteInventorySKU(sku){
@@ -412,20 +716,11 @@ document.addEventListener("DOMContentLoaded", () => {
   function adjustQty(sku, delta){
     const it = inventory[sku];
     if(!it) return;
-    it.qty = Math.max(0, Number(it.qty||0) + delta);
+    it.qty = Math.max(0, Number(it.qty || 0) + delta);
     it.updatedAt = nowStamp();
     saveJSON(LS_KEYS.inventory, inventory);
     renderInventory();
     updateKPIs();
-  }
-
-  function escapeHtml(s){
-    return String(s ?? "")
-      .replaceAll("&","&amp;")
-      .replaceAll("<","&lt;")
-      .replaceAll(">","&gt;")
-      .replaceAll('"',"&quot;")
-      .replaceAll("'","&#039;");
   }
 
   function renderInventory(){
@@ -440,17 +735,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
       rows.push(`
         <tr>
-          <td class="mono"><b>${sku}</b><div class="muted small">${it.updatedAt||""}</div></td>
+          <td class="mono"><b>${sku}</b><div class="muted small">${it.updatedAt || ""}</div></td>
           <td>${escapeHtml(it.brand)}</td>
           <td>${escapeHtml(it.airline)}</td>
           <td>${escapeHtml(it.aircraft)}</td>
           <td class="mono">${escapeHtml(it.reg)}</td>
           <td class="mono">${escapeHtml(it.scale)}</td>
-          <td class="right"><b>${Number(it.qty||0)}</b></td>
+          <td class="right"><b>${Number(it.qty || 0)}</b></td>
           <td class="right">
-            <button onclick="window.__dec('${sku}')">-</button>
-            <button onclick="window.__inc('${sku}')">+</button>
-            <button class="bad" onclick="window.__del('${sku}')">刪除</button>
+            <button class="small" onclick="window.__dec('${sku}')" title="-1">-1</button>
+            <button class="small" onclick="window.__inc('${sku}')" title="+1">+1</button>
+            <button class="small warn" onclick="window.__sell1('${sku}')" title="售出 1">售出1</button>
+            <button class="small bad" onclick="window.__del('${sku}')" title="刪除">刪除</button>
           </td>
         </tr>
       `);
@@ -463,8 +759,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   window.__inc = (sku)=>adjustQty(sku, +1);
   window.__dec = (sku)=>adjustQty(sku, -1);
+  window.__sell1 = (sku)=>{ el("skuInput").value = sku; el("qtyInput").value = 1; setAutoInfoFromSKU(); sellInventory(); };
   window.__del = (sku)=>deleteInventorySKU(sku);
 
+  /** ==========================
+   *  Catalog ops
+   *  ========================== */
   function saveCatalogForSKU(){
     const sku = normalizeSKU(el("skuInput").value);
     if(!sku){ toast("請先輸入 SKU。","warn"); return; }
@@ -476,14 +776,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const scale = el("scaleInput").value.trim();
 
     if(!brand || !airline || !aircraft || !reg || !scale){
-      toast("請補齊品牌/航空公司/機型/Reg/比例。","warn");
+      toast("請補齊品牌/航空公司/機型/Reg/比例，再存入 Catalog。","warn");
       return;
     }
 
     catalog[sku] = { brand, airline, aircraft, reg, scale };
     saveJSON(LS_KEYS.catalog, catalog);
-    setAutoInfoFromSKU();
     updateKPIs();
+    setAutoInfoFromSKU();
     toast(`已存入 Catalog：${sku}`,"good");
   }
 
@@ -491,10 +791,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const sku = normalizeSKU(el("skuInput").value);
     if(!sku){ toast("請先輸入 SKU。","warn"); return; }
     if(!catalog[sku]){ toast("此 SKU 不在 Catalog。","warn"); return; }
+
     delete catalog[sku];
     saveJSON(LS_KEYS.catalog, catalog);
-    setAutoInfoFromSKU();
     updateKPIs();
+    setAutoInfoFromSKU();
     toast(`已從 Catalog 刪除：${sku}`,"bad");
   }
 
@@ -520,26 +821,447 @@ document.addEventListener("DOMContentLoaded", () => {
     clearForm();
     renderInventory();
     updateKPIs();
-    toast("已清除全部資料。","bad");
+    toast("已清除全部資料並回到範例狀態。","bad");
   }
 
-  // === 綁事件（安全綁定） ===
+  /** ==========================
+   *  Import / Export
+   *  ========================== */
+  function exportToBox(obj){
+    el("exportBox").textContent = JSON.stringify(obj, null, 2);
+  }
+
+  function copyExport(){
+    const txt = el("exportBox").textContent || "";
+    navigator.clipboard.writeText(txt)
+      .then(()=>toast("已複製到剪貼簿。"))
+      .catch(()=>toast("複製失敗，請手動選取複製。","warn"));
+  }
+
+  function doExportCatalog(){
+    exportToBox(catalog);
+    toast("已匯出 Catalog 到右側框。");
+  }
+
+  function doExportInventory(){
+    exportToBox(inventory);
+    toast("已匯出 Inventory 到右側框。");
+  }
+
+  function parseJsonArea(){
+    const raw = el("jsonArea").value.trim();
+    if(!raw){ toast("請先貼上 JSON。","warn"); return null; }
+    try{
+      const obj = JSON.parse(raw);
+      if(typeof obj !== "object" || obj === null){ toast("JSON 內容不是物件。","warn"); return null; }
+      return obj;
+    }catch(e){
+      toast("JSON 格式錯誤，請檢查逗號與括號。","bad");
+      return null;
+    }
+  }
+
+  function importCatalogFromArea(){
+    const obj = parseJsonArea(); if(!obj) return;
+    for(const [sku, v] of Object.entries(obj)){
+      if(!v || typeof v !== "object"){ toast(`Catalog 格式不正確：${sku}`,"bad"); return; }
+      for(const k of ["brand","airline","aircraft","reg","scale"]){
+        if(!(k in v)){ toast(`Catalog 缺欄位：${sku}.${k}`,"bad"); return; }
+      }
+    }
+    catalog = obj;
+    saveJSON(LS_KEYS.catalog, catalog);
+    updateKPIs();
+    setAutoInfoFromSKU();
+    toast("已匯入 Catalog（覆蓋完成）。","good");
+  }
+
+  function importInventoryFromArea(){
+    const obj = parseJsonArea(); if(!obj) return;
+    for(const [sku, v] of Object.entries(obj)){
+      if(!v || typeof v !== "object"){ toast(`Inventory 格式不正確：${sku}`,"bad"); return; }
+      if(!("qty" in v)){ toast(`Inventory 缺 qty：${sku}`,"bad"); return; }
+    }
+    inventory = obj;
+    saveJSON(LS_KEYS.inventory, inventory);
+    renderInventory();
+    updateKPIs();
+    toast("已匯入 Inventory（覆蓋完成）。","good");
+  }
+
+  /** ==========================
+   *  Online lookup (no backend)
+   *  ========================== */
+
+  function toJinaUrl(url){
+    // jina.ai 轉讀：支援 http/https
+    if(url.startsWith("https://")) return JINA_PREFIX_S + url.replace("https://","");
+    if(url.startsWith("http://")) return JINA_PREFIX + url.replace("http://","");
+    return JINA_PREFIX_S + url;
+  }
+
+  async function fetchTextViaJina(url){
+    const u = toJinaUrl(url);
+    const resp = await fetch(u, { cache: "no-store" });
+    if(!resp.ok) throw new Error(`Fetch failed ${resp.status}`);
+    return await resp.text();
+  }
+
+  function extractBestGuessFromText(sku, text){
+    // 這裡是「heuristic 解析」：從 HTML 文字中抓可能的字段
+    // 由於各站版型不同，先用通用規則最大化成功率：
+    const t = (text || "").replace(/\s+/g, " ").trim();
+
+    // scale: 1:200 / 1/200 / 1:400 / 1/400
+    const scaleMatch = t.match(/(1\s*[:\/]\s*(?:200|400|500|300|144|72|150))/i);
+    const scale = scaleMatch ? scaleMatch[1].replace(/\s+/g,"").replace("/",":") : "";
+
+    // reg: 常見機身編號格式：JA702J / B-18210 / N123AA / HLxxxx / etc.
+    const regMatch = t.match(/\b([A-Z]{1,3}-?[A-Z0-9]{3,6})\b/);
+    const reg = regMatch ? regMatch[1] : "";
+
+    // brand candidates
+    const BRANDS = ["JC WINGS","J C WINGS","Jcwings","PHOENIX","GEMINI","HERPA","INFLIGHT","PANDA","SKY500","NG MODELS","AV400","AEROCLASSICS"];
+    let brand = "";
+    for(const b of BRANDS){
+      const re = new RegExp(b.replace(/\s+/g,"\\s*"), "i");
+      if(re.test(t)){ brand = b.replace(/\s+/g," ").toUpperCase().includes("JC") ? "JC Wings" : b; break; }
+    }
+
+    // aircraft: 常見型號 pattern
+    const aircraftMatch =
+      t.match(/\b(A3[0-9]{2}(?:-?[0-9]{2,3})?|A3[0-9]{2}neo|B7[0-9]{2}(?:-?[0-9]{2,3})?(?:ER|LR)?|B7[0-9]{2}(?:ER|LR)?|B7[0-9]{2}|B7[0-9]{2}-[0-9]{3}(?:ER|LR)?|B7[0-9]{2}-[0-9]{3}|B787-?(?:8|9|10)|B777-?(?:200|300)(?:ER)?|B747-?(?:200|300|400|8)(?:F)?|MD-?11|DC-?10|DC-?3|A220-?(?:100|300)|A350-?(?:900|1000)|A330-?(?:200|300)|A321neo|A320neo)\b/i);
+
+    const aircraft = aircraftMatch ? normalizeAircraft(aircraftMatch[0]) : "";
+
+    // airline: 很難通用抓，先用一個「常見航空公司字典」來比對（可擴充）
+    const AIRLINES = [
+      "JAPAN AIRLINES","JAL","ANA","ALL NIPPON AIRWAYS","EVA AIR","CHINA AIRLINES","CATHAY PACIFIC","SINGAPORE AIRLINES",
+      "KOREAN AIR","ASIANA","DELTA","UNITED","AMERICAN AIRLINES","LUFTHANSA","SWISS","AIR FRANCE","KLM","QATAR AIRWAYS","EMIRATES","ETIHAD",
+      "THAI AIRWAYS","VIETNAM AIRLINES","GARUDA","MALAYSIA AIRLINES","BRITISH AIRWAYS"
+    ];
+    let airline = "";
+    for(const a of AIRLINES){
+      const re = new RegExp("\\b" + a.replace(/\s+/g,"\\s+") + "\\b", "i");
+      if(re.test(t)){
+        airline = toNiceAirline(a);
+        break;
+      }
+    }
+
+    // 如果能在內容附近找到 SKU 本身，代表結果相關性高
+    const hasSku = t.toUpperCase().includes(sku.toUpperCase());
+
+    // 回傳：只要有任一字段，就視為候選（但要避免全空）
+    const any = Boolean(brand || airline || aircraft || reg || scale);
+    return { ok: any, hasSku, product: { brand, airline, aircraft, reg, scale } };
+  }
+
+  function normalizeAircraft(s){
+    return s.toUpperCase()
+      .replace(/^B/,"Boeing ")
+      .replace(/^A/,"Airbus ")
+      .replace(/NEO/i,"neo")
+      .replace(/\s+/g," ")
+      .trim();
+  }
+
+  function toNiceAirline(a){
+    const m = {
+      "JAPAN AIRLINES":"Japan Airlines",
+      "JAL":"Japan Airlines",
+      "ALL NIPPON AIRWAYS":"All Nippon Airways",
+      "ANA":"All Nippon Airways",
+      "EVA AIR":"EVA Air",
+      "CHINA AIRLINES":"China Airlines",
+      "CATHAY PACIFIC":"Cathay Pacific",
+      "SINGAPORE AIRLINES":"Singapore Airlines",
+      "KOREAN AIR":"Korean Air",
+      "ASIANA":"Asiana Airlines",
+      "QATAR AIRWAYS":"Qatar Airways",
+      "BRITISH AIRWAYS":"British Airways",
+      "AIR FRANCE":"Air France"
+    };
+    return m[a] || a.split(" ").map(w => w[0] + w.slice(1).toLowerCase()).join(" ");
+  }
+
+  async function onlineLookupSKU(){
+    const sku = normalizeSKU(el("skuInput").value);
+    if(!sku){ toast("請先輸入或掃描 SKU。","warn"); return; }
+
+    // 若 catalog 已有，就不必查
+    if(catalog[sku]){
+      toast("Catalog 已有此 SKU，無需線上查詢。","good");
+      setAutoInfoFromSKU();
+      return;
+    }
+
+    el("lookupBtn").disabled = true;
+    el("autoInfo").value = "🔎 線上查詢中…（依網路速度可能需 2-10 秒）";
+    toast("開始線上查詢…","warn");
+
+    const candidates = [];
+
+    try{
+      for(const src of LOOKUP_SOURCES){
+        const urls = src.searchUrls(sku);
+        for(const url of urls){
+          try{
+            const html = await fetchTextViaJina(url);
+            const guess = extractBestGuessFromText(sku, html);
+            if(guess.ok){
+              candidates.push({ source: src.name, url, ...guess });
+              // 如果內容明確包含 sku，而且抓到 scale/aircraft 之類，優先早停
+              const p = guess.product;
+              const strong = guess.hasSku && (p.aircraft || p.scale || p.reg);
+              if(strong) break;
+            }
+          }catch(e){
+            // 忽略單一 url 失敗，繼續下一個
+          }
+        }
+      }
+
+      if(!candidates.length){
+        el("autoInfo").value = "❌ 線上查詢找不到（可能網站版型/搜尋網址變了）。可手動輸入後存入 Catalog。";
+        toast("線上查詢找不到。","bad");
+        return;
+      }
+
+      // 選最好的：hasSku 優先，再看字段數量
+      candidates.sort((a,b)=>{
+        const score = (x)=> (x.hasSku?10:0) + countFields(x.product);
+        return score(b) - score(a);
+      });
+
+      const best = candidates[0];
+      const p = best.product;
+
+      // 若 airline/brand 等還是空，但 aircraft/scale/reg 有值，仍可先填入讓你補一點點
+      fillManualFields(p);
+
+      el("autoInfo").value = `✅ 線上查詢（${best.source}）→ ${formatInfo(p)}（建議按「存入 Catalog」）`;
+      toast(`線上查詢成功（${best.source}）。請按「存入 Catalog」保存。`,"good");
+
+    } finally {
+      el("lookupBtn").disabled = false;
+    }
+  }
+
+  function countFields(p){
+    return ["brand","airline","aircraft","reg","scale"].reduce((n,k)=>n + (p?.[k] ? 1 : 0), 0);
+  }
+
+  /** ==========================
+   *  Barcode scanner
+   *  ========================== */
+  let scanStream = null;
+  let zxingReader = null;
+  let scanRunning = false;
+
+  function showScanModal(show){
+    const m = el("scanModal");
+    if(!m) return;
+    m.classList.toggle("show", !!show);
+    m.setAttribute("aria-hidden", show ? "false" : "true");
+  }
+
+  async function listCameras(){
+    const sel = el("cameraSelect");
+    sel.innerHTML = "";
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === "videoinput");
+
+    if(!cams.length){
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = "找不到相機";
+      sel.appendChild(opt);
+      return;
+    }
+
+    for(const c of cams){
+      const opt = document.createElement("option");
+      opt.value = c.deviceId;
+      opt.textContent = c.label || `Camera ${sel.length+1}`;
+      sel.appendChild(opt);
+    }
+  }
+
+  function setScanStatus(msg){
+    const s = el("scanStatus");
+    if(s) s.textContent = msg;
+  }
+
+  function onDetected(code){
+    const v = normalizeSKU(code);
+    if(!v) return;
+    el("skuInput").value = v;
+    setAutoInfoFromSKU();
+    toast(`已掃描到 SKU：${v}`,"good");
+    stopScan();
+    showScanModal(false);
+  }
+
+  async function startScan(){
+    if(scanRunning) return;
+
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      toast("此瀏覽器不支援相機 API。請改用 Chrome/Safari。","bad");
+      return;
+    }
+
+    showScanModal(true);
+    setScanStatus("請允許相機權限…");
+
+    try{
+      // 先要一次權限，才拿得到 device label（iOS/部分瀏覽器）
+      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      scanStream.getTracks().forEach(t => t.stop());
+      scanStream = null;
+
+      await listCameras();
+      const deviceId = el("cameraSelect").value || undefined;
+
+      // 優先使用 BarcodeDetector
+      if("BarcodeDetector" in window){
+        const formats = ["code_128","ean_13","ean_8","code_39","qr_code","upc_a","upc_e","itf"];
+        const detector = new BarcodeDetector({ formats });
+
+        scanStream = await navigator.mediaDevices.getUserMedia({
+          video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" },
+          audio: false
+        });
+
+        const video = el("scanVideo");
+        video.srcObject = scanStream;
+        await video.play();
+        scanRunning = true;
+        setScanStatus("掃描中（BarcodeDetector）…");
+
+        const tick = async () => {
+          if(!scanRunning) return;
+          try{
+            const barcodes = await detector.detect(video);
+            if(barcodes && barcodes.length){
+              onDetected(barcodes[0].rawValue || "");
+              return;
+            }
+          }catch(e){}
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+
+      } else if (window.ZXingBrowser) {
+        // ZXing fallback
+        scanRunning = true;
+        setScanStatus("掃描中（ZXing）…");
+
+        zxingReader = new window.ZXingBrowser.BrowserMultiFormatReader();
+        const video = el("scanVideo");
+        // ZXing 會自己抓 stream
+        await zxingReader.decodeFromVideoDevice(deviceId || undefined, video, (result, err) => {
+          if(result){
+            onDetected(result.getText());
+          }
+        });
+
+      } else {
+        toast("掃描庫載入失敗（ZXing 未載入）。","bad");
+        setScanStatus("掃描庫載入失敗。");
+      }
+
+    } catch (e) {
+      console.error(e);
+      toast("相機啟動失敗：可能未允許權限或被內建瀏覽器阻擋。","bad");
+      setScanStatus("相機啟動失敗。");
+      stopScan();
+    }
+  }
+
+  function stopScan(){
+    scanRunning = false;
+
+    if(zxingReader){
+      try{ zxingReader.reset(); }catch(e){}
+      zxingReader = null;
+    }
+
+    const video = el("scanVideo");
+    if(video){
+      try{ video.pause(); }catch(e){}
+      video.srcObject = null;
+    }
+
+    if(scanStream){
+      scanStream.getTracks().forEach(t => t.stop());
+      scanStream = null;
+    }
+
+    setScanStatus("已停止。");
+  }
+
+  safeBind("cameraSelect","change", async ()=>{
+    // 重新啟動以切換相機
+    if(!el("scanModal").classList.contains("show")) return;
+    stopScan();
+    await startScan();
+  });
+
+  /** ==========================
+   *  Bind events
+   *  ========================== */
   safeBind("skuInput","input", setAutoInfoFromSKU);
+  safeBind("skuInput","keydown", (e)=>{ if(e.key==="Enter") addOrUpdateInventory(); });
+
+  safeBind("qtyInput","keydown", (e)=>{ if(e.key==="Enter") addOrUpdateInventory(); });
+
   safeBind("addBtn","click", addOrUpdateInventory);
+  safeBind("sellBtn","click", sellInventory);
+  safeBind("lookupBtn","click", onlineLookupSKU);
+
+  safeBind("scanBtn","click", startScan);
+  safeBind("closeScanBtn","click", ()=>{ stopScan(); showScanModal(false); });
+
+  // 點背景關閉
+  el("scanModal").addEventListener("click", (e)=>{
+    if(e.target === el("scanModal")){
+      stopScan();
+      showScanModal(false);
+    }
+  });
+
   safeBind("clearFormBtn","click", clearForm);
+
   safeBind("saveCatalogBtn","click", saveCatalogForSKU);
   safeBind("deleteCatalogBtn","click", deleteCatalogForSKU);
-  safeBind("resetDemoBtn","click", resetDemo);
-  safeBind("wipeAllBtn","click", wipeAll);
+
   safeBind("searchInput","input", renderInventory);
 
-  // init
+  safeBind("exportCatalogBtn","click", ()=>{ exportToBox(catalog); toast("已匯出 Catalog 到右側框。"); });
+  safeBind("exportInventoryBtn","click", ()=>{ exportToBox(inventory); toast("已匯出 Inventory 到右側框。"); });
+
+  safeBind("importCatalogBtn","click", ()=>{ toast("把 Catalog JSON 貼到下方輸入框，再按『把這份 JSON 當 Catalog 匯入』。","warn"); });
+  safeBind("importInventoryBtn","click", ()=>{ toast("把 Inventory JSON 貼到下方輸入框，再按『把這份 JSON 當 Inventory 匯入』。","warn"); });
+
+  safeBind("doImportCatalogBtn","click", importCatalogFromArea);
+  safeBind("doImportInventoryBtn","click", importInventoryFromArea);
+
+  safeBind("copyExportBtn","click", copyExport);
+
+  safeBind("resetDemoBtn","click", resetDemo);
+  safeBind("wipeAllBtn","click", wipeAll);
+
+  /** ==========================
+   *  Init
+   *  ========================== */
   updateSavePill();
   updateKPIs();
   setAutoInfoFromSKU();
   renderInventory();
 
-  toast("已載入完成 ✅（按鈕應可正常運作）");
+  toast("已載入完成 ✅","good");
+
 });
 </script>
 </body>
