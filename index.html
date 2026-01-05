@@ -1043,134 +1043,158 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ✅ iPhone：只開一次相機（不要先開再關）
   async function startScan(){
-    if(scanRunning) return;
+  if(scanRunning) return;
 
-    if(!window.isSecureContext){
-      toast("相機需要 HTTPS（安全環境）。GitHub Pages 才能用。","bad");
-      return;
-    }
-    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
-      toast("此瀏覽器不支援相機。請用 Safari/Chrome。","bad");
-      return;
-    }
-
-    showScanModal(true);
-    setScanStatus("請允許相機權限…（iPhone 請用 Safari/Chrome，不要用 LINE/FB/IG 內建瀏覽器）");
-
-    try{
-      const deviceId = el("cameraSelect")?.value || undefined;
-
-      // 更保守：先不要強制 exact deviceId（iOS 有時會 overconstrained）
-      const constraints = deviceId
-        ? { video: { deviceId: { ideal: deviceId } }, audio: false }
-        : { video: { facingMode: { ideal: "environment" } }, audio: false };
-
-      scanStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-      // 權限拿到後再列舉相機（才會有 label）
-      try{ await listCameras(); }catch(e){}
-
-      const video = el("scanVideo");
-      video.setAttribute("playsinline", "true");
-      video.muted = true; // iOS 更穩
-      video.srcObject = scanStream;
-
-      await video.play();
-      scanRunning = true;
-
-      if("BarcodeDetector" in window){
-        setScanStatus("掃描中（BarcodeDetector）…");
-        const formats = ["code_128","ean_13","ean_8","code_39","qr_code","upc_a","upc_e","itf"];
-        const detector = new BarcodeDetector({ formats });
-
-        const tick = async () => {
-          if(!scanRunning) return;
-          try{
-            const barcodes = await detector.detect(video);
-            if(barcodes && barcodes.length){
-              onDetected(barcodes[0].rawValue || "");
-              return;
-            }
-          }catch(e){}
-          requestAnimationFrame(tick);
-        };
-        requestAnimationFrame(tick);
-
-      } else if (window.ZXingBrowser) {
-        setScanStatus("掃描中（ZXing）…");
-        zxingReader = new window.ZXingBrowser.BrowserMultiFormatReader();
-        zxingReader.decodeFromVideoElement(video, (result, err) => {
-          if(!scanRunning) return;
-          if(result){
-            onDetected(result.getText());
-          }
-        });
-
-      } else {
-        throw new Error("No barcode library available");
-      }
-
-    } catch (e) {
-      console.error(e);
-
-      const name = e?.name || "UnknownError";
-      const message = e?.message || "";
-      const secure = window.isSecureContext;
-      const ua = navigator.userAgent;
-
-      const debug =
-        `相機啟動失敗\n` +
-        `錯誤類型: ${name}\n` +
-        `訊息: ${message}\n` +
-        `isSecureContext(HTTPS): ${secure}\n` +
-        `UA: ${ua}`;
-
-      let msg = "相機啟動失敗。";
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        msg = "未取得相機權限（可能拒絕/被阻擋）。請用 Safari 開啟並允許相機。";
-      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
-        msg = "找不到可用相機（或相機條件不符合）。";
-      } else if (name === "NotReadableError") {
-        msg = "相機被佔用或系統暫時無法讀取（請關閉相機/通話/其他使用相機的 App 後再試）。";
-      }
-
-      toast(msg, "bad");
-      setScanStatus(debug);
-
-      const isInApp = /Line|FBAV|FBAN|Instagram|GSA|MicroMessenger/i.test(ua);
-      if (isInApp) {
-        toast("你可能在 App 內建瀏覽器開啟（LINE/FB/IG），請改用 Safari 重新開。", "warn");
-      }
-
-      stopScan();
-    }
+  if(!window.isSecureContext){
+    toast("相機需要 HTTPS（安全環境）。GitHub Pages 才能用。","bad");
+    return;
+  }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    toast("此瀏覽器不支援相機。請用 Safari/Chrome。","bad");
+    return;
   }
 
-  function stopScan(){
-    scanRunning = false;
+  showScanModal(true);
+  setScanStatus("準備啟動相機…請允許相機權限。");
 
-    if(zxingReader){
-      try{ zxingReader.reset(); }catch(e){}
-      zxingReader = null;
-    }
+  try{
+    // ✅ iPhone 穩定優先：不要強制 deviceId，先用 environment
+    const constraints = { video: { facingMode: { ideal: "environment" } }, audio: false };
+
+    // 1) 先拿到 stream（這裡一定需要 await）
+    scanStream = await navigator.mediaDevices.getUserMedia(constraints);
 
     const video = el("scanVideo");
-    try{ video.pause(); }catch(e){}
-    video.srcObject = null;
+    video.setAttribute("playsinline", "true");
+    video.muted = true;                // iOS 比較穩
+    video.autoplay = true;             // 讓瀏覽器知道我們要自動播
+    video.srcObject = scanStream;
 
-    if(scanStream){
-      try{ scanStream.getTracks().forEach(t => t.stop()); }catch(e){}
-      scanStream = null;
+    // ✅ 2) iOS 關鍵：不要在 play() 前插入多餘 await（例如 enumerateDevices）
+    // 先嘗試播放
+    const playPromise = video.play();
+
+    // 3) play() 可能會被 iOS 擋（不是權限問題），所以要特別處理
+    if(playPromise && typeof playPromise.then === "function"){
+      playPromise.then(() => {
+        scanRunning = true;
+        setScanStatus("相機已啟動，掃描中…（請把條碼放中間）");
+        startDecodeLoop(video);
+      }).catch((e) => {
+        // ✅ 不要立刻 stopScan，先讓使用者點一下畫面啟動
+        console.error("video.play() blocked:", e);
+
+        setScanStatus(
+          "相機已取得權限，但 iPhone 阻擋自動播放預覽畫面。\n" +
+          "請在畫面上『點一下』開始預覽與掃描。"
+        );
+
+        // 點一下畫面後再 play（這次一定是手勢內）
+        const once = async () => {
+          video.removeEventListener("click", once);
+          try{
+            await video.play();
+            scanRunning = true;
+            setScanStatus("相機已啟動，掃描中…（請把條碼放中間）");
+            startDecodeLoop(video);
+          }catch(err2){
+            console.error(err2);
+            toast("相機預覽仍無法播放。請關閉後重試。","bad");
+            setScanStatus("預覽播放失敗：" + (err2?.name || "") + " " + (err2?.message || ""));
+            stopScan();
+          }
+        };
+        video.addEventListener("click", once, { once: true });
+
+        // ⚠️ 這裡不要 stopScan，因為 stream 其實已經在了
+        toast("請點一下相機畫面開始預覽","warn");
+      });
+    } else {
+      // 非標準狀況（很少）
+      scanRunning = true;
+      setScanStatus("相機已啟動，掃描中…");
+      startDecodeLoop(video);
     }
 
-    setScanStatus("已停止。");
-  }
+    // ✅ 4) 權限拿到後再列舉相機（可有可無，不影響掃描）
+    try{ await listCameras(); }catch(e){}
 
-  safeBind("cameraSelect","change", async ()=>{
-    if(!el("scanModal").classList.contains("show")) return;
+  } catch (e) {
+    console.error(e);
+
+    const name = e?.name || "UnknownError";
+    const message = e?.message || "";
+    const secure = window.isSecureContext;
+    const ua = navigator.userAgent;
+
+    const debug =
+      `相機啟動失敗\n` +
+      `錯誤類型: ${name}\n` +
+      `訊息: ${message}\n` +
+      `isSecureContext(HTTPS): ${secure}\n` +
+      `UA: ${ua}`;
+
+    let msg = "相機啟動失敗。";
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      msg = "未取得相機權限（可能拒絕/被阻擋）。請用 Safari 開啟並允許相機。";
+    } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+      msg = "找不到可用相機（或相機條件不符合）。";
+    } else if (name === "NotReadableError") {
+      msg = "相機被佔用或系統暫時無法讀取（請關閉相機/通話/其他使用相機的 App 後再試）。";
+    }
+
+    toast(msg, "bad");
+    setScanStatus(debug);
+
+    const isInApp = /Line|FBAV|FBAN|Instagram|GSA|MicroMessenger/i.test(ua);
+    if (isInApp) {
+      toast("你可能在 App 內建瀏覽器開啟（LINE/FB/IG），請改用 Safari 重新開。", "warn");
+    }
+
     stopScan();
-    await startScan();
-  });
+  }
+}
+
+// 把原本偵測邏輯抽出來（BarcodeDetector / ZXing）
+function startDecodeLoop(video){
+  // 先清一下狀態
+  try{ if(zxingReader) zxingReader.reset(); }catch(e){}
+  zxingReader = null;
+
+  if("BarcodeDetector" in window){
+    const formats = ["code_128","ean_13","ean_8","code_39","qr_code","upc_a","upc_e","itf"];
+    const detector = new BarcodeDetector({ formats });
+
+    const tick = async () => {
+      if(!scanRunning) return;
+      try{
+        const barcodes = await detector.detect(video);
+        if(barcodes && barcodes.length){
+          onDetected(barcodes[0].rawValue || "");
+          return;
+        }
+      }catch(e){
+        // iOS 有時 detect 會丟例外，忽略繼續
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+
+  } else if (window.ZXingBrowser) {
+    zxingReader = new window.ZXingBrowser.BrowserMultiFormatReader();
+    zxingReader.decodeFromVideoElement(video, (result, err) => {
+      if(!scanRunning) return;
+      if(result){
+        onDetected(result.getText());
+      }
+    });
+
+  } else {
+    toast("沒有可用的條碼掃描器（BarcodeDetector/ZXing）。","bad");
+    stopScan();
+  }
+}
+
 
   // ===== Bind =====
   safeBind("skuInput","input", setAutoInfoFromSKU);
@@ -1222,3 +1246,4 @@ document.addEventListener("DOMContentLoaded", () => {
 </script>
 </body>
 </html>
+
