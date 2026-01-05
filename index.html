@@ -62,6 +62,7 @@
       padding:10px 10px;
       border-radius:10px;
       outline:none;
+      font-size:16px; /* iPhone 避免輸入放大 */
     }
     input:focus, textarea:focus{border-color:#3b82f6aa; box-shadow:0 0 0 4px #3b82f622}
     .field{flex:1; min-width:140px}
@@ -78,6 +79,7 @@
       transition:.15s;
       font-weight:600;
       font-size:13px;
+      touch-action: manipulation;
     }
     button:hover{transform: translateY(-1px); border-color:#3b82f6aa}
     button.primary{background: linear-gradient(180deg, #2563eb, #1d4ed8); border-color:#2563eb;}
@@ -140,6 +142,8 @@
       font-size:13px;
       line-height:1.5;
       z-index: 9999;
+      white-space:pre-wrap;
+      word-break:break-word;
     }
     .toast.show{display:block}
     .toast.good{border-color:#10b98177}
@@ -410,12 +414,13 @@
   </section>
 
   <section class="card">
-    <div class="hd"><b>如何使用</b></div>
+    <div class="hd"><b>如何使用（GitHub Pages）</b></div>
     <div class="bd status">
-      1) 把本檔案存成 <b>inventory.html</b> → 用 Chrome/Edge 直接開啟即可。<br/>
-      2) 輸入 SKU（例如 <span class="mono">SA2043</span>）。若 Catalog 找不到，可按「線上查詢」抓取並自動填入欄位。<br/>
-      3) 查到後按「存入 Catalog」保存 → 下次同 SKU 就完全離線自動辨識。<br/>
-      4) 設定 Qty 後按「加入/更新庫存」。售出時用右側「售出 / 扣庫存」。<br/>
+      ✅ GitHub Pages 會自動載入根目錄的 <b>index.html</b>。請把這份檔案命名為 <b>index.html</b>。<br/>
+      1) Repo 根目錄放 index.html → Settings → Pages → Branch 選 main / root → Save<br/>
+      2) 開啟網址：<span class="mono">https://你的帳號.github.io/你的repo/</span><br/>
+      3) 輸入 SKU（例如 <span class="mono">SA2043</span>）。若 Catalog 找不到，可按「線上查詢」抓取並自動填入欄位。<br/>
+      4) 查到後按「存入 Catalog」保存 → 下次同 SKU 就完全離線自動辨識。<br/>
       5) 任何變更都會自動保存到你的瀏覽器（localStorage）。要換電腦/備份：用「匯出 JSON」。<br/>
     </div>
   </section>
@@ -424,6 +429,24 @@
 <div id="toast" class="toast"></div>
 
 <script>
+/** ==========================
+ *  GitHub Pages / Debug Safety
+ *  - 如果 JS 發生錯誤，不要「按鈕都沒反應」
+ *  - 會用 toast 顯示錯誤，方便你在手機上也看得到
+ *  ========================== */
+window.addEventListener("error", (e)=>{
+  try{
+    const msg = (e && e.message) ? e.message : "Unknown error";
+    toast("⚠️ JS 發生錯誤：\n" + msg, "bad");
+  }catch(_){}
+});
+window.addEventListener("unhandledrejection", (e)=>{
+  try{
+    const msg = (e && e.reason && e.reason.message) ? e.reason.message : String(e.reason || "Promise rejected");
+    toast("⚠️ 非預期錯誤：\n" + msg, "bad");
+  }catch(_){}
+});
+
 /** ==========================
  *  Local storage schema
  *  catalog: { [sku]: {brand, airline, aircraft, reg, scale, source?, url?} }
@@ -794,10 +817,10 @@ function deleteCatalogForSKU(){
 
 /** ==========================
  *  Online lookup (Multi-source)
- *  - Pure frontend: uses r.jina.ai as a text-proxy + DuckDuckGo HTML search
+ *  - GitHub Pages friendly: ALWAYS use HTTPS proxy (avoid Mixed Content)
+ *  - uses r.jina.ai as a text-proxy + DuckDuckGo HTML search
  *  - Order: ScaleModelStore -> WingsWorld -> AviationMegastore
  *  ========================== */
-const JINA_PREFIX = "https://r.jina.ai/http://";
 const JINA_PREFIX_HTTPS = "https://r.jina.ai/https://";
 
 async function onlineLookup(){
@@ -839,7 +862,7 @@ async function onlineLookup(){
     toast("多來源都查不到此 SKU。可能原因：搜尋沒收錄 / 轉址格式改變 / 網站頁面結構改版。","warn");
   }catch(e){
     console.error(e);
-    toast("線上查詢失敗（可能網路/代理/網站限制）。","bad");
+    toast("線上查詢失敗（可能網路/代理/網站限制）。\n" + (e?.message || ""), "bad");
   }finally{
     btn.disabled = false;
     btn.textContent = oldText;
@@ -856,7 +879,7 @@ function applyLookupResult(sku, result){
   el("autoInfo").value = `🌐 ${result.source || "Online"}｜${result.url ? result.url : ""}\n${result.brand}｜${result.airline}｜${result.aircraft}｜${result.reg}｜${result.scale}`;
   toast(`已線上抓取（${result.source}），請按「存入 Catalog」保存。`, "good");
 
-  // store source+url into catalog draft (optional: only when user saves)
+  // draft into catalog (not auto-save to avoid silent bad data)
   catalog[sku] = {
     ...(catalog[sku] || {}),
     brand: result.brand || "",
@@ -867,23 +890,20 @@ function applyLookupResult(sku, result){
     source: result.source || "",
     url: result.url || ""
   };
-  // NOTE: we DO NOT auto-save catalog to localStorage here to avoid storing partial/bad results silently.
 }
 
 /** ---------- Shared: DDG search + URL extraction (handles uddg redirects) ---------- */
 async function ddgSearchFirstUrlByDomain(query, domain){
   const ddgUrl = `${JINA_PREFIX_HTTPS}duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const ddgText = await (await fetch(ddgUrl)).text();
+  const ddgText = await (await fetch(ddgUrl, {cache:"no-store"})).text();
   return extractFirstDomainLinkFromDDGText(ddgText, domain);
 }
 
 function extractFirstDomainLinkFromDDGText(text, domain){
-  // 1) direct link
   const directRe = new RegExp(`https?:\\/\\/(www\\.)?${escapeRegex(domain)}\\/[^\\s<>"']+`, "i");
   let m = text.match(directRe);
   if(m) return tidyUrl(m[0]);
 
-  // 2) uddg redirect links
   const uddgMatches = [...text.matchAll(/uddg=([^&\s<>"']+)/gi)];
   for(const um of uddgMatches){
     try{
@@ -918,16 +938,23 @@ async function lookupScaleModelStore(sku){
   return { ...parsed, source: "ScaleModelStore", url };
 }
 
+/** ---------- Fetch via Jina (HTTPS only) ---------- */
 async function fetchTextViaJina(url){
-  const clean = url.replace(/^https?:\/\//,"");
-  const proxyUrl = url.startsWith("https://") ? (JINA_PREFIX_HTTPS + clean) : (JINA_PREFIX + clean);
-  return await (await fetch(proxyUrl)).text();
+  // always use HTTPS proxy to avoid mixed-content issues on GitHub Pages
+  if(!/^https:\/\//i.test(url)){
+    // if any http slipped in, upgrade it
+    url = url.replace(/^http:\/\//i, "https://");
+  }
+  const clean = url.replace(/^https:\/\//i,"");
+  const proxyUrl = JINA_PREFIX_HTTPS + clean;
+  const resp = await fetch(proxyUrl, {cache:"no-store"});
+  if(!resp.ok) throw new Error(`Jina fetch failed: ${resp.status}`);
+  return await resp.text();
 }
 
 function parseScaleModelStoreText(text, sku){
   const t = (text || "").replace(/\r/g,"");
 
-  // Airline / Aircraft: first two ### headings (common on jina-rendered page)
   const h3 = [...t.matchAll(/^###\s+(.+)$/gm)].map(m=>m[1].trim());
   const airline = h3[0] || "";
   const aircraft = h3[1] || "";
@@ -936,31 +963,17 @@ function parseScaleModelStoreText(text, sku){
   const scale = pickAfterLabel(t, "Scale:");
   const nr = pickAfterLabel(t, "Nr:");
 
-  // If Nr exists but differs, still allow; some pages have suffix
-  // Reg: try block between "Added to website:" and "Our price:"
   const block = grabBetween(t, "Added to website:", "Our price:");
   let reg = (extractRegistrationFromBlock(block) || "").trim();
   if(!reg) reg = (extractRegistrationFromBlock(t) || "").trim();
 
-  // sanity check
   const ok = (brand || airline || aircraft) && (scale || brand);
   if(!ok) return null;
 
-  // Sometimes airline/aircraft headings missing; try title line as fallback
-  let airline2 = airline, aircraft2 = aircraft;
-  if(!airline2 || !aircraft2){
-    const title = (t.match(/^#\s+(.+)$/m)?.[1] || "").trim();
-    // Try to extract aircraft from title
-    if(!aircraft2){
-      const ac = extractAircraftFromText(title) || extractAircraftFromText(t);
-      if(ac) aircraft2 = ac;
-    }
-  }
-
   return {
     brand: brand || "",
-    airline: airline2 || "",
-    aircraft: aircraft2 || "",
+    airline: airline || "",
+    aircraft: aircraft || "",
     reg: reg || "",
     scale: scale || "",
     _nr: nr || ""
@@ -969,18 +982,14 @@ function parseScaleModelStoreText(text, sku){
 
 /** ---------- Source 2: WingsWorld ---------- */
 async function lookupWingsWorld(sku){
-  // WingsWorld pages vary; DDG search then parse any line containing SKU
   const q = `site:wingsworld.cn ${sku}`;
   const url = await ddgSearchFirstUrlByDomain(q, "wingsworld.cn");
   if(!url) return null;
 
   const text = await fetchTextViaJina(url);
 
-  // Find a line containing SKU with enough context
   const line = findBestLineContainingSKU(text, sku);
   const parsed = parseWingsWorldLine(line, sku);
-
-  // If line parsing fails, attempt generic extraction from full text
   const fallback = parsed || parseGenericFromText(text, sku);
   if(!fallback) return null;
 
@@ -990,7 +999,6 @@ async function lookupWingsWorld(sku){
 function findBestLineContainingSKU(text, sku){
   const lines = (text || "").replace(/\r/g,"").split("\n").map(s=>s.trim()).filter(Boolean);
   const target = normalizeSKU(sku);
-  // prefer shorter lines that include the sku and one of Boeing/Airbus/1:200
   const candidates = lines.filter(l => l.toUpperCase().includes(target));
   if(!candidates.length) return "";
 
@@ -1000,7 +1008,7 @@ function findBestLineContainingSKU(text, sku){
       if(/\b1:\d+\b/.test(l)) s+=3;
       if(/\b(Boeing|Airbus|Embraer|ATR|Bombardier)\b/i.test(l)) s+=3;
       if(/\b(JC|Wings|NG|Phoenix|Gemini|Herpa)\b/i.test(l)) s+=2;
-      s += Math.max(0, 60 - l.length)/60; // prefer shorter
+      s += Math.max(0, 60 - l.length)/60;
       return s;
     };
     return score(b) - score(a);
@@ -1018,14 +1026,10 @@ function parseWingsWorldLine(line, sku){
   const brand = extractBrandFromText(line) || "";
   let airline = line;
 
-  // remove known pieces to approximate airline
   [aircraft, reg, sku, scale, brand].filter(Boolean).forEach(x=>{
     airline = airline.replaceAll(x, " ");
   });
   airline = airline.replace(/\s+/g," ").trim();
-
-  // Sometimes airline becomes empty; keep original line if so
-  if(!airline) airline = "";
 
   const ok = (brand || airline || aircraft) && (scale || brand || aircraft);
   if(!ok) return null;
@@ -1035,14 +1039,11 @@ function parseWingsWorldLine(line, sku){
 
 /** ---------- Source 3: AviationMegastore (best-effort) ---------- */
 async function lookupAviationMegastore(sku){
-  // AviationMegastore may not use SKU, but try a site search with the SKU anyway.
   const q = `site:aviationmegastore.com ${sku}`;
   const url = await ddgSearchFirstUrlByDomain(q, "aviationmegastore.com");
   if(!url) return null;
 
   const text = await fetchTextViaJina(url);
-
-  // Try parse from <title> or headings in text
   const parsed = parseAviationMegastoreText(text, sku);
   if(!parsed) return null;
 
@@ -1051,27 +1052,22 @@ async function lookupAviationMegastore(sku){
 
 function parseAviationMegastoreText(text, sku){
   const t = (text || "").replace(/\r/g,"");
-
-  // Often jina has a first "# ..." heading
   const h1 = (t.match(/^#\s+(.+)$/m)?.[1] || "").trim();
   const h2 = (t.match(/^##\s+(.+)$/m)?.[1] || "").trim();
-
   const combined = [h1,h2].filter(Boolean).join(" | ");
+
   const brand = extractBrandFromText(combined) || pickAfterLabel(t, "Brand:") || "";
   const scale = (combined.match(/\b1:\d+\b/i)?.[0] || pickAfterLabel(t, "Scale:") || "").trim();
   const reg = (extractRegistrationFromBlock(combined) || extractRegistrationFromBlock(t) || "").trim();
   const aircraft = extractAircraftFromText(combined) || extractAircraftFromText(t) || "";
 
-  // airline: remove other parts from combined
   let airline = combined || "";
   [brand, aircraft, reg, scale, sku].filter(Boolean).forEach(x=>{
     airline = airline.replaceAll(x, " ");
   });
   airline = airline.replace(/\s+/g," ").trim();
 
-  // If combined empty, try a generic parse on full text
   const fallback = parseGenericFromText(t, sku);
-
   const candidate = {
     brand: brand || fallback?.brand || "",
     airline: airline || fallback?.airline || "",
@@ -1108,13 +1104,11 @@ function extractRegistrationFromBlock(text){
     if(/our price|added to website|in stock|scale:|brand:|nr:|material|stand|add to cart|cart|price/i.test(line)) continue;
     if(line.length > 40) continue;
 
-    // Common registration patterns
     const re = /\b([A-Z]{1,3}-[A-Z0-9]{2,6}|N[0-9]{1,5}[A-Z]{0,2}|JA[0-9]{3,4}[A-Z]{0,2}|B-[0-9]{3,5}|HL[0-9]{3,5}|D-[A-Z]{3,4}|PH-[A-Z0-9]{3,4})\b/;
     const m = line.match(re);
     if(m) return m[1];
   }
 
-  // If not found line-by-line, scan whole text once
   const m2 = String(text).match(/\b([A-Z]{1,3}-[A-Z0-9]{2,6}|N[0-9]{1,5}[A-Z]{0,2}|JA[0-9]{3,4}[A-Z]{0,2}|B-[0-9]{3,5}|HL[0-9]{3,5}|D-[A-Z]{3,4}|PH-[A-Z0-9]{3,4})\b/);
   return m2 ? m2[1] : "";
 }
@@ -1123,14 +1117,11 @@ function extractAircraftFromText(text){
   const s = String(text || "");
   const m = s.match(/\b(Boeing|Airbus|Embraer|ATR|Bombardier|McDonnell|Douglas|Lockheed|Antonov)\b[^|,\n]{0,60}/i);
   if(!m) return "";
-  // cleanup tail
   return m[0].replace(/\s{2,}/g," ").trim();
 }
 
 function extractBrandFromText(text){
   const s = String(text || "");
-
-  // Common brands
   const known = [
     "JC Wings","NG Models","Phoenix","GeminiJets","Gemini Jets","Herpa","Inflight200","Inflight 200",
     "AeroClassics","Aeroclassics","SkyMarks","Skymarks","Hogan","Witty","Panda Models","Panda",
@@ -1142,9 +1133,7 @@ function extractBrandFromText(text){
     if(re.test(s)) return normalizeBrandName(b);
   }
 
-  // special case: "JC" + "Wings"
   if(/\bJC\b/i.test(s) && /\bWINGS\b/i.test(s)) return "JC Wings";
-
   return "";
 }
 
@@ -1161,7 +1150,6 @@ function parseGenericFromText(text, sku){
   const reg = (extractRegistrationFromBlock(t) || "").trim();
   const aircraft = extractAircraftFromText(t) || "";
 
-  // airline: attempt to use a heading line containing SKU, else use empty
   const line = findBestLineContainingSKU(t, sku) || "";
   let airline = line || "";
   [brand, aircraft, reg, scale, sku].filter(Boolean).forEach(x=>{
@@ -1335,6 +1323,7 @@ updateKPIs();
 setAutoInfoFromSKU();
 renderInventory();
 renderTx();
+toast("載入完成 ✅", "good");
 </script>
 </body>
 </html>
